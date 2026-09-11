@@ -5,7 +5,7 @@ import { Button, Card, CardContent, CardHeader, CardTitle, CardDescription, Prog
 import { useAppStore } from '@/store'
 import { applyFormattingProfile, generateTableOfContents, resolveOrphansAndWidows } from '@/utils/formatting'
 import type { FormattingPlan, FormattingDecision } from '@/types'
-import { createAIProvider, NVIDIA_FREE_MODELS, GROQ_FREE_MODELS, type NvidiaModelId } from '@/utils/ai'
+import { createAIProvider, NVIDIA_FREE_MODELS, GROQ_FREE_MODELS, getAIKeyStatus, type NvidiaModelId } from '@/utils/ai'
 import { findNodesByType } from '@/utils/helpers'
 import { analyzeDocument as analyzeDocumentLocal } from '@/utils/analysis'
 import type { DocumentNode } from '@/types'
@@ -41,13 +41,13 @@ export default function FormatPage() {
   const runFormatting = async () => {
     if (!currentDocument || !currentFormattingProfile) return
     
-    // Check at least one AI provider is configured (NVIDIA or Groq)
-    const nvidiaKey = (import.meta as any).env?.VITE_NVIDIA_API_KEY as string | undefined
-    const groqKey = (import.meta as any).env?.VITE_GROQ_API_KEY as string | undefined
-    const isNvidiaValid = nvidiaKey && nvidiaKey.length >= 20 && !nvidiaKey.includes('xxxx')
-    const isGroqValid = groqKey && groqKey.length >= 15 && !groqKey.includes('xxxx')
+    // Single source of truth for key status (same check providers use)
+    const keyStatus = getAIKeyStatus()
+    console.log('[AI] key status:', { nvidia: keyStatus.nvidia, groq: keyStatus.groq })
+    const isNvidiaValid = keyStatus.nvidia.ok
+    const isGroqValid = keyStatus.groq.ok
     if (!isNvidiaValid && !isGroqValid) {
-      console.warn('No AI keys configured')
+      console.warn('[AI] no usable keys:', keyStatus)
       setError('AI formatting is currently unavailable. Please try again later.')
       setProcessingProgress({ stage: 'ai_analysis', progress: 0, message: 'Service unavailable' })
       return
@@ -65,28 +65,31 @@ export default function FormatPage() {
       setProcessingProgress({ stage: 'ai_analysis', progress: 25, message: 'Analyzing document structure...' })
       
       const analysisForAI = currentAnalysis ?? analyzeDocumentLocal(currentDocument)
-      // Try NVIDIA Ultra → NVIDIA DeepSeek → Groq, first success wins
+      // Try NVIDIA Ultra → NVIDIA Lightning → Groq 120b → Groq 20b, first success wins.
+      // Keys are passed explicitly so providers use the exact values the gate validated.
+      const nvidiaKey = (import.meta as any).env?.VITE_NVIDIA_API_KEY as string | undefined
+      const groqKey = (import.meta as any).env?.VITE_GROQ_API_KEY as string | undefined
       let plan: any = null
       let lastErr: any = null
-      const attempts: Array<{ provider: 'nvidia' | 'groq'; model?: string }> = []
+      const attempts: Array<{ provider: 'nvidia' | 'groq'; model?: string; apiKey?: string }> = []
       if (isNvidiaValid) {
-        attempts.push({ provider: 'nvidia', model: NVIDIA_FREE_MODELS.nemotronUltra })
-        attempts.push({ provider: 'nvidia', model: NVIDIA_FREE_MODELS.lightning })
+        attempts.push({ provider: 'nvidia', model: NVIDIA_FREE_MODELS.nemotronUltra, apiKey: nvidiaKey })
+        attempts.push({ provider: 'nvidia', model: NVIDIA_FREE_MODELS.lightning, apiKey: nvidiaKey })
       }
       if (isGroqValid) {
-        attempts.push({ provider: 'groq', model: GROQ_FREE_MODELS.gptOss120b })
-        attempts.push({ provider: 'groq', model: GROQ_FREE_MODELS.gptOss20b })
+        attempts.push({ provider: 'groq', model: GROQ_FREE_MODELS.gptOss120b, apiKey: groqKey })
+        attempts.push({ provider: 'groq', model: GROQ_FREE_MODELS.gptOss20b, apiKey: groqKey })
       }
-      if (attempts.length === 0) attempts.push({ provider: 'nvidia', model: selectedModel })
+      if (attempts.length === 0) attempts.push({ provider: 'nvidia', model: selectedModel, apiKey: nvidiaKey })
       
       for (const a of attempts) {
         try {
-          const aiProvider = createAIProvider(a.provider, { model: a.model })
+          const aiProvider = createAIProvider(a.provider, { model: a.model, apiKey: a.apiKey })
           plan = await aiProvider.analyzeDocument(currentDocument, analysisForAI)
           break
-        } catch (e) {
+        } catch (e: any) {
           lastErr = e
-          console.warn(`${a.provider}/${a.model} failed, trying next:`, e)
+          console.warn(`[AI] ${a.provider}/${a.model} failed [${e?.code || 'unknown'}], trying next:`, e?.message)
         }
       }
       if (!plan) throw lastErr || new Error('AI formatting is currently unavailable. Please try again.')

@@ -14,12 +14,38 @@ export const NVIDIA_FREE_MODELS = {
 
 export type NvidiaModelId = typeof NVIDIA_FREE_MODELS[keyof typeof NVIDIA_FREE_MODELS]
 
+export function cleanApiKey(raw?: string): string {
+  return (raw || '').trim().replace(/^["']|["']$/g, '').replace(/\\n/g, '')
+}
+
+export function isUsableKey(key: string, minLen: number): boolean {
+  const k = cleanApiKey(key)
+  return k.length >= minLen && !k.includes('xxxx') && !k.includes('XXXX')
+}
+
 function getNvidiaConfig(): { apiKey: string; model: string } {
   const envKey = (import.meta as any)?.env?.VITE_NVIDIA_API_KEY as string | undefined
   const envModel = (import.meta as any)?.env?.VITE_NVIDIA_MODEL as string | undefined
   return {
-    apiKey: envKey || '',
+    apiKey: cleanApiKey(envKey),
     model: envModel || 'nvidia/nemotron-3-ultra-550b-a55b',
+  }
+}
+
+// Single source of truth for key status — used by UI gating AND providers
+export function getAIKeyStatus(): {
+  nvidia: { ok: boolean; len: number; reason: string }
+  groq: { ok: boolean; len: number; reason: string }
+} {
+  const nRaw = (import.meta as any)?.env?.VITE_NVIDIA_API_KEY as string | undefined
+  const gRaw = (import.meta as any)?.env?.VITE_GROQ_API_KEY as string | undefined
+  const n = cleanApiKey(nRaw)
+  const g = cleanApiKey(gRaw)
+  const nReason = !n ? 'empty' : n.length < 20 ? `too-short(len ${n.length})` : (n.includes('xxxx') || n.includes('XXXX')) ? 'placeholder' : 'ok'
+  const gReason = !g ? 'empty' : g.length < 15 ? `too-short(len ${g.length})` : (g.includes('xxxx') || g.includes('XXXX')) ? 'placeholder' : 'ok'
+  return {
+    nvidia: { ok: nReason === 'ok', len: n.length, reason: nReason },
+    groq: { ok: gReason === 'ok', len: g.length, reason: gReason },
   }
 }
 
@@ -31,19 +57,22 @@ export class NVIDIAProvider implements AIProvider {
 
   constructor(apiKey?: string, model?: string) {
     const cfg = getNvidiaConfig()
-    this.apiKey = apiKey || cfg.apiKey || ''
+    this.apiKey = cleanApiKey(apiKey) || cfg.apiKey || ''
     // Use Vite/Vercel proxy to avoid CORS — same origin /api/nvidia
     this.baseUrl = '/api/nvidia/v1'
     this.model = model || cfg.model || 'nvidia/nemotron-3-ultra-550b-a55b'
   }
 
   private isPlaceholderKey(key: string): boolean {
-    return !key || key.length < 20 || key.includes('xxxx') || key.includes('xxxxxxxxxxxxxxxx')
+    return !isUsableKey(key, 20)
   }
 
   async analyzeDocument(document: DocumentNode, analysis: DocumentAnalysis): Promise<FormattingPlan> {
-    if (!this.apiKey || this.isPlaceholderKey(this.apiKey)) {
-      throw new Error('AI formatting is currently unavailable. Please try again later.')
+    if (this.isPlaceholderKey(this.apiKey)) {
+      console.error(`[AI nvidia] key check failed (len ${this.apiKey.length}) for model ${this.model}`)
+      const err: any = new Error('AI formatting is currently unavailable. Please try again later.')
+      err.code = 'AI_CONFIG'
+      throw err
     }
     const textContent = this.extractTextForAnalysis(document)
     const prompt = this.buildAnalysisPrompt(textContent, analysis)
@@ -68,22 +97,30 @@ export class NVIDIAProvider implements AIProvider {
 
     if (!response.ok) {
       const err = await response.text()
-      console.error('NVIDIA API error:', response.status, err)
-      throw new Error('AI formatting is currently unavailable. Please try again.')
+      console.error(`[AI nvidia] HTTP ${response.status} model=${this.model} body=`, err.slice(0, 500))
+      const e: any = new Error('AI formatting is currently unavailable. Please try again.')
+      e.code = `AI_HTTP_${response.status}`
+      throw e
     }
 
     const data = await response.json()
     const content = data.choices[0]?.message?.content
 
     if (!content) {
-      throw new Error('AI formatting is currently unavailable. Please try again.')
+      const e: any = new Error('AI formatting is currently unavailable. Please try again.')
+      e.code = 'AI_EMPTY'
+      throw e
     }
 
     return parseJsonResponse(content)
   }
 
   async detectStructure(document: DocumentNode): Promise<Partial<DocumentAnalysis>> {
-    if (!this.apiKey || this.isPlaceholderKey(this.apiKey)) throw new Error('AI formatting is currently unavailable. Please try again later.')
+    if (this.isPlaceholderKey(this.apiKey)) {
+      const e: any = new Error('AI formatting is currently unavailable. Please try again later.')
+      e.code = 'AI_CONFIG'
+      throw e
+    }
     const textContent = this.extractTextForAnalysis(document)
     const prompt = `Analyze document structure and return JSON with:
     - chaptersDetected: number
@@ -119,15 +156,19 @@ export class NVIDIAProvider implements AIProvider {
 
     if (!response.ok) {
       const err = await response.text()
-      console.error('NVIDIA API error:', response.status, err)
-      throw new Error('AI formatting is currently unavailable. Please try again.')
+      console.error(`[AI nvidia] HTTP ${response.status} model=${this.model} body=`, err.slice(0, 500))
+      const e: any = new Error('AI formatting is currently unavailable. Please try again.')
+      e.code = `AI_HTTP_${response.status}`
+      throw e
     }
 
     const data = await response.json()
     const content = data.choices[0]?.message?.content
 
     if (!content) {
-      throw new Error('AI formatting is currently unavailable. Please try again.')
+      const e: any = new Error('AI formatting is currently unavailable. Please try again.')
+      e.code = 'AI_EMPTY'
+      throw e
     }
 
     return parseJsonResponse(content)
@@ -191,7 +232,7 @@ function getGroqConfig(): { apiKey: string; model: string } {
   const envKey = (import.meta as any)?.env?.VITE_GROQ_API_KEY as string | undefined
   const envModel = (import.meta as any)?.env?.VITE_GROQ_MODEL as string | undefined
   return {
-    apiKey: envKey || '',
+    apiKey: cleanApiKey(envKey),
     model: envModel || 'openai/gpt-oss-120b',
   }
 }
@@ -250,17 +291,22 @@ export class GroqProvider implements AIProvider {
 
   constructor(apiKey?: string, model?: string) {
     const cfg = getGroqConfig()
-    this.apiKey = apiKey || cfg.apiKey || ''
+    this.apiKey = cleanApiKey(apiKey) || cfg.apiKey || ''
     this.baseUrl = '/api/groq/openai/v1'
     this.model = model || cfg.model || 'openai/gpt-oss-120b'
   }
 
   private isPlaceholderKey(key: string): boolean {
-    return !key || key.length < 15 || key.includes('xxxx')
+    return !isUsableKey(key, 15)
   }
 
   async analyzeDocument(document: DocumentNode, analysis: DocumentAnalysis): Promise<FormattingPlan> {
-    if (!this.apiKey || this.isPlaceholderKey(this.apiKey)) throw new Error('AI formatting is currently unavailable. Please try again later.')
+    if (this.isPlaceholderKey(this.apiKey)) {
+      console.error(`[AI groq] key check failed (len ${this.apiKey.length}) for model ${this.model}`)
+      const e: any = new Error('AI formatting is currently unavailable. Please try again later.')
+      e.code = 'AI_CONFIG'
+      throw e
+    }
     const textContent = this.extractTextForAnalysis(document)
     const prompt = this.buildAnalysisPrompt(textContent, analysis)
     const response = await fetchWithRetry(`${this.baseUrl}/chat/completions`, {
@@ -275,17 +321,27 @@ export class GroqProvider implements AIProvider {
     })
     if (!response.ok) {
       const err = await response.text()
-      console.error('Groq API error:', response.status, err)
-      throw new Error('AI formatting is currently unavailable. Please try again.')
+      console.error(`[AI groq] HTTP ${response.status} model=${this.model} body=`, err.slice(0, 500))
+      const e: any = new Error('AI formatting is currently unavailable. Please try again.')
+      e.code = `AI_HTTP_${response.status}`
+      throw e
     }
     const data = await response.json()
     const content = data.choices[0]?.message?.content
-    if (!content) throw new Error('AI formatting is currently unavailable. Please try again.')
+    if (!content) {
+      const e: any = new Error('AI formatting is currently unavailable. Please try again.')
+      e.code = 'AI_EMPTY'
+      throw e
+    }
     return parseJsonResponse(content)
   }
 
   async detectStructure(document: DocumentNode): Promise<Partial<DocumentAnalysis>> {
-    if (!this.apiKey || this.isPlaceholderKey(this.apiKey)) throw new Error('AI formatting is currently unavailable. Please try again later.')
+    if (this.isPlaceholderKey(this.apiKey)) {
+      const e: any = new Error('AI formatting is currently unavailable. Please try again later.')
+      e.code = 'AI_CONFIG'
+      throw e
+    }
     const textContent = this.extractTextForAnalysis(document)
     const prompt = `Analyze document structure and return JSON with:
     - chaptersDetected: number
@@ -313,12 +369,18 @@ export class GroqProvider implements AIProvider {
     })
     if (!response.ok) {
       const err = await response.text()
-      console.error('Groq API error:', response.status, err)
-      throw new Error('AI formatting is currently unavailable. Please try again.')
+      console.error(`[AI groq] HTTP ${response.status} model=${this.model} body=`, err.slice(0, 500))
+      const e: any = new Error('AI formatting is currently unavailable. Please try again.')
+      e.code = `AI_HTTP_${response.status}`
+      throw e
     }
     const data = await response.json()
     const content = data.choices[0]?.message?.content
-    if (!content) throw new Error('AI formatting is currently unavailable. Please try again.')
+    if (!content) {
+      const e: any = new Error('AI formatting is currently unavailable. Please try again.')
+      e.code = 'AI_EMPTY'
+      throw e
+    }
     return parseJsonResponse(content)
   }
 
