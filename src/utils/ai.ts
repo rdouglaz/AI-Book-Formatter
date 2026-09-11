@@ -84,23 +84,28 @@ export class NVIDIAProvider implements AIProvider {
       })
     }
 
-    const response = await fetchWithRetry(`${this.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.apiKey}`,
+    // NVIDIA 503s often; fail fast (20s, 1 retry) so the chain moves on quickly.
+    const response = await fetchWithRetry(
+      `${this.baseUrl}/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+          messages: [
+            { role: 'system', content: this.getSystemPrompt() },
+            { role: 'user', content: prompt },
+          ],
+          temperature: 0.3,
+          max_tokens: 4000,
+          response_format: { type: 'json_object' },
+        }),
       },
-      body: JSON.stringify({
-        model: this.model,
-        messages: [
-          { role: 'system', content: this.getSystemPrompt() },
-          { role: 'user', content: prompt },
-        ],
-        temperature: 0.3,
-        max_tokens: 4000,
-        response_format: { type: 'json_object' },
-      }),
-    })
+      { timeoutMs: 20000, retries: 1 }
+    )
 
     if (!response.ok) {
       const err = await response.text()
@@ -320,7 +325,11 @@ async function fetchWithRetry(
         await new Promise(r => setTimeout(r, 2000 * (attempt + 1)))
         continue
       }
-      if (e?.name === 'AbortError') throw new Error('AI request timed out. Please try again.')
+      if (e?.name === 'AbortError') {
+        const t: any = new Error('AI request timed out. Please try again.')
+        t.code = 'AI_TIMEOUT'
+        throw t
+      }
       throw e
     } finally { clearTimeout(id) }
   }

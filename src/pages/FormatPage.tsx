@@ -76,13 +76,13 @@ export default function FormatPage() {
       const groqKey = (import.meta as any).env?.VITE_GROQ_API_KEY as string | undefined
       let plan: any = null
       let lastErr: any = null
-      // Always try the full chain: providers without a baked key use the
-      // server route automatically, so ordering matters, not key presence.
+      // Groq first (fast, reliable), NVIDIA as fallback — first success wins.
+      // Providers without a baked key use the server route automatically.
       const attempts: Array<{ provider: 'nvidia' | 'groq'; model?: string; apiKey?: string }> = [
-        { provider: 'nvidia', model: NVIDIA_FREE_MODELS.nemotronUltra, apiKey: nvidiaKey },
-        { provider: 'nvidia', model: NVIDIA_FREE_MODELS.lightning, apiKey: nvidiaKey },
         { provider: 'groq', model: GROQ_FREE_MODELS.gptOss120b, apiKey: groqKey },
         { provider: 'groq', model: GROQ_FREE_MODELS.gptOss20b, apiKey: groqKey },
+        { provider: 'nvidia', model: NVIDIA_FREE_MODELS.nemotronUltra, apiKey: nvidiaKey },
+        { provider: 'nvidia', model: NVIDIA_FREE_MODELS.lightning, apiKey: nvidiaKey },
       ]
       
       for (const a of attempts) {
