@@ -71,7 +71,7 @@ export default function FormatPage() {
       const attempts: Array<{ provider: 'nvidia' | 'groq'; model?: string }> = []
       if (isNvidiaValid) {
         attempts.push({ provider: 'nvidia', model: NVIDIA_FREE_MODELS.nemotronUltra })
-        attempts.push({ provider: 'nvidia', model: NVIDIA_FREE_MODELS.deepseekV4Pro })
+        attempts.push({ provider: 'nvidia', model: NVIDIA_FREE_MODELS.lightning })
       }
       if (isGroqValid) {
         attempts.push({ provider: 'groq', model: GROQ_FREE_MODELS.gptOss120b })

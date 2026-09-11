@@ -9,7 +9,7 @@ export interface AIProvider {
 
 export const NVIDIA_FREE_MODELS = {
   nemotronUltra: 'nvidia/nemotron-3-ultra-550b-a55b',
-  deepseekV4Pro: 'deepseek-ai/deepseek-v4-pro-0813',
+  lightning: 'nvidia/nemotron-3.5-lightning-30b-a3b',
 } as const
 
 export type NvidiaModelId = typeof NVIDIA_FREE_MODELS[keyof typeof NVIDIA_FREE_MODELS]
@@ -378,7 +378,7 @@ export function createAIProvider(type: 'nvidia' | 'groq', config?: { apiKey?: st
 export function getNvidiaModels(): Array<{ id: NvidiaModelId; label: string; endpoint: string; description: string }> {
   return [
     { id: NVIDIA_FREE_MODELS.nemotronUltra, label: 'Nemotron 3 Ultra 550B-A55B', endpoint: 'integrate.api.nvidia.com', description: '1M context, hybrid Mamba-Transformer, best reasoning' },
-    { id: NVIDIA_FREE_MODELS.deepseekV4Pro, label: 'DeepSeek V4 Pro 0813', endpoint: 'integrate.api.nvidia.com', description: '262K context, MoE for coding & agentic workflows' },
+    { id: NVIDIA_FREE_MODELS.lightning, label: 'Nemotron 3.5 Lightning 30B-A3B', endpoint: 'integrate.api.nvidia.com', description: 'Fastest 30B A3B MoE, best availability fallback' },
   ]
 }
 
