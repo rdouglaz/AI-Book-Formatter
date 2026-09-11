@@ -6,6 +6,13 @@
   "rewrites": [
     { "source": "/api/nvidia/:path*", "destination": "https://integrate.api.nvidia.com/:path*" },
     { "source": "/api/groq/:path*", "destination": "https://api.groq.com/:path*" },
-    { "source": "/(.*)", "destination": "/index.html" }
+    { "source": "/", "destination": "/index.html" },
+    { "source": "/dashboard", "destination": "/index.html" },
+    { "source": "/upload", "destination": "/index.html" },
+    { "source": "/analyze", "destination": "/index.html" },
+    { "source": "/design", "destination": "/index.html" },
+    { "source": "/format", "destination": "/index.html" },
+    { "source": "/preview", "destination": "/index.html" },
+    { "source": "/export", "destination": "/index.html" }
   ]
 }

@@ -68,14 +68,21 @@ export class NVIDIAProvider implements AIProvider {
   }
 
   async analyzeDocument(document: DocumentNode, analysis: DocumentAnalysis): Promise<FormattingPlan> {
-    if (this.isPlaceholderKey(this.apiKey)) {
-      console.error(`[AI nvidia] key check failed (len ${this.apiKey.length}) for model ${this.model}`)
-      const err: any = new Error('AI formatting is currently unavailable. Please try again later.')
-      err.code = 'AI_CONFIG'
-      throw err
-    }
     const textContent = this.extractTextForAnalysis(document)
     const prompt = this.buildAnalysisPrompt(textContent, analysis)
+    // No baked key (e.g. Vercel bundle built before vars were added):
+    // fall back to the server route, which reads keys at request time.
+    if (this.isPlaceholderKey(this.apiKey)) {
+      console.warn(`[AI nvidia] no baked key, using server route for ${this.model}`)
+      return callViaServer('nvidia', this.model, {
+        messages: [
+          { role: 'system', content: this.getSystemPrompt() },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.3,
+        max_tokens: 4000,
+      })
+    }
 
     const response = await fetchWithRetry(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
@@ -251,6 +258,43 @@ function parseJsonResponse(content: string): any {
   }
 }
 
+// Server-side route (Vercel function api/ai.js). Used when the browser has
+// no baked key — keys are read from runtime env, so no rebuild is needed.
+async function callViaServer(
+  provider: 'nvidia' | 'groq',
+  model: string,
+  payload: { messages: any[]; temperature: number; max_tokens: number }
+): Promise<any> {
+  const res = await fetchWithRetry(
+    '/api/ai',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, model, ...payload }),
+    },
+    { timeoutMs: 60000, retries: 0 }
+  );
+  const json = await res.json().catch(() => ({} as any));
+  if (!res.ok || !(json as any)?.ok) {
+    const code = (json as any)?.error || `AI_HTTP_${res.status}`;
+    console.error(`[AI ${provider}] server route failed [${code}] model=${model}`);
+    const e: any = new Error(
+      code === 'AI_CONFIG'
+        ? 'AI formatting is currently unavailable. Please try again later.'
+        : 'AI formatting is currently unavailable. Please try again.'
+    );
+    e.code = code;
+    throw e;
+  }
+  const content = (json as any)?.data?.choices?.[0]?.message?.content;
+  if (!content) {
+    const e: any = new Error('AI formatting is currently unavailable. Please try again.');
+    e.code = 'AI_EMPTY';
+    throw e;
+  }
+  return parseJsonResponse(content);
+}
+
 async function fetchWithRetry(
   url: string,
   init: RequestInit,
@@ -301,14 +345,19 @@ export class GroqProvider implements AIProvider {
   }
 
   async analyzeDocument(document: DocumentNode, analysis: DocumentAnalysis): Promise<FormattingPlan> {
-    if (this.isPlaceholderKey(this.apiKey)) {
-      console.error(`[AI groq] key check failed (len ${this.apiKey.length}) for model ${this.model}`)
-      const e: any = new Error('AI formatting is currently unavailable. Please try again later.')
-      e.code = 'AI_CONFIG'
-      throw e
-    }
     const textContent = this.extractTextForAnalysis(document)
     const prompt = this.buildAnalysisPrompt(textContent, analysis)
+    if (this.isPlaceholderKey(this.apiKey)) {
+      console.warn(`[AI groq] no baked key, using server route for ${this.model}`)
+      return callViaServer('groq', this.model, {
+        messages: [
+          { role: 'system', content: this.getSystemPrompt() },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.3,
+        max_tokens: 4000,
+      })
+    }
     const response = await fetchWithRetry(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.apiKey}` },

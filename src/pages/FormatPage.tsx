@@ -41,12 +41,17 @@ export default function FormatPage() {
   const runFormatting = async () => {
     if (!currentDocument || !currentFormattingProfile) return
     
-    // Single source of truth for key status (same check providers use)
+    // Providers fall back to the server route (/api/ai) when the browser has
+    // no baked key, so only block when neither baked keys NOR server exist
+    // (local dev without keys and without the Vercel function).
     const keyStatus = getAIKeyStatus()
     console.log('[AI] key status:', { nvidia: keyStatus.nvidia, groq: keyStatus.groq })
     const isNvidiaValid = keyStatus.nvidia.ok
     const isGroqValid = keyStatus.groq.ok
-    if (!isNvidiaValid && !isGroqValid) {
+    const isLocalhost =
+      typeof window !== 'undefined' &&
+      /localhost|127\.0\.0\.1/.test(window.location.hostname)
+    if (!isNvidiaValid && !isGroqValid && isLocalhost) {
       console.warn('[AI] no usable keys:', keyStatus)
       setError('AI formatting is currently unavailable. Please try again later.')
       setProcessingProgress({ stage: 'ai_analysis', progress: 0, message: 'Service unavailable' })
@@ -71,16 +76,14 @@ export default function FormatPage() {
       const groqKey = (import.meta as any).env?.VITE_GROQ_API_KEY as string | undefined
       let plan: any = null
       let lastErr: any = null
-      const attempts: Array<{ provider: 'nvidia' | 'groq'; model?: string; apiKey?: string }> = []
-      if (isNvidiaValid) {
-        attempts.push({ provider: 'nvidia', model: NVIDIA_FREE_MODELS.nemotronUltra, apiKey: nvidiaKey })
-        attempts.push({ provider: 'nvidia', model: NVIDIA_FREE_MODELS.lightning, apiKey: nvidiaKey })
-      }
-      if (isGroqValid) {
-        attempts.push({ provider: 'groq', model: GROQ_FREE_MODELS.gptOss120b, apiKey: groqKey })
-        attempts.push({ provider: 'groq', model: GROQ_FREE_MODELS.gptOss20b, apiKey: groqKey })
-      }
-      if (attempts.length === 0) attempts.push({ provider: 'nvidia', model: selectedModel, apiKey: nvidiaKey })
+      // Always try the full chain: providers without a baked key use the
+      // server route automatically, so ordering matters, not key presence.
+      const attempts: Array<{ provider: 'nvidia' | 'groq'; model?: string; apiKey?: string }> = [
+        { provider: 'nvidia', model: NVIDIA_FREE_MODELS.nemotronUltra, apiKey: nvidiaKey },
+        { provider: 'nvidia', model: NVIDIA_FREE_MODELS.lightning, apiKey: nvidiaKey },
+        { provider: 'groq', model: GROQ_FREE_MODELS.gptOss120b, apiKey: groqKey },
+        { provider: 'groq', model: GROQ_FREE_MODELS.gptOss20b, apiKey: groqKey },
+      ]
       
       for (const a of attempts) {
         try {
