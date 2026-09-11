@@ -41,28 +41,14 @@ export class NVIDIAProvider implements AIProvider {
     return !key || key.length < 20 || key.includes('xxxx') || key.includes('xxxxxxxxxxxxxxxx')
   }
 
-  private async fetchWithTimeout(url: string, init: RequestInit, ms = 25000): Promise<Response> {
-    const controller = new AbortController()
-    const id = setTimeout(() => controller.abort(), ms)
-    try {
-      const res = await fetch(url, { ...init, signal: controller.signal })
-      return res
-    } catch (e: any) {
-      if (e?.name === 'AbortError') throw new Error('AI request timed out. Please try again.')
-      throw e
-    } finally { clearTimeout(id) }
-  }
-
   async analyzeDocument(document: DocumentNode, analysis: DocumentAnalysis): Promise<FormattingPlan> {
-    console.log('[NVIDIA] analyzeDocument key:', this.apiKey ? `${this.apiKey.slice(0,8)}... len=${this.apiKey.length}` : 'EMPTY', 'model:', this.model)
     if (!this.apiKey || this.isPlaceholderKey(this.apiKey)) {
-      console.warn('NVIDIA key missing/placeholder - env:', (import.meta as any).env?.VITE_NVIDIA_API_KEY ? `${String((import.meta as any).env.VITE_NVIDIA_API_KEY).slice(0,8)}...` : 'EMPTY')
       throw new Error('AI formatting is currently unavailable. Please try again later.')
     }
     const textContent = this.extractTextForAnalysis(document)
     const prompt = this.buildAnalysisPrompt(textContent, analysis)
 
-    const response = await this.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
+    const response = await fetchWithRetry(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -93,7 +79,7 @@ export class NVIDIAProvider implements AIProvider {
       throw new Error('AI formatting is currently unavailable. Please try again.')
     }
 
-    return JSON.parse(content)
+    return parseJsonResponse(content)
   }
 
   async detectStructure(document: DocumentNode): Promise<Partial<DocumentAnalysis>> {
@@ -114,7 +100,7 @@ export class NVIDIAProvider implements AIProvider {
     Document text (first 10000 chars):
     ${textContent.slice(0, 10000)}`
 
-    const response = await this.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
+    const response = await fetchWithRetry(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -123,12 +109,11 @@ export class NVIDIAProvider implements AIProvider {
       body: JSON.stringify({
         model: this.model,
         messages: [
-          { role: 'system', content: 'You are a document structure analyzer. Return only valid JSON.' },
+          { role: 'system', content: 'You are a document structure analyzer. Return only valid JSON, no markdown fences.' },
           { role: 'user', content: prompt },
         ],
         temperature: 0.1,
         max_tokens: 2000,
-        response_format: { type: 'json_object' },
       }),
     })
 
@@ -145,7 +130,7 @@ export class NVIDIAProvider implements AIProvider {
       throw new Error('AI formatting is currently unavailable. Please try again.')
     }
 
-    return JSON.parse(content)
+    return parseJsonResponse(content)
   }
 
   private getSystemPrompt(): string {
@@ -196,9 +181,8 @@ export class NVIDIAProvider implements AIProvider {
 }
 
 export const GROQ_FREE_MODELS = {
-  llama70b: 'llama-3.1-70b-versatile',
-  llama8b: 'llama-3.1-8b-instant',
-  mixtral: 'mixtral-8x7b-32768',
+  gptOss120b: 'openai/gpt-oss-120b',
+  gptOss20b: 'openai/gpt-oss-20b',
 } as const
 
 export type GroqModelId = typeof GROQ_FREE_MODELS[keyof typeof GROQ_FREE_MODELS]
@@ -208,8 +192,54 @@ function getGroqConfig(): { apiKey: string; model: string } {
   const envModel = (import.meta as any)?.env?.VITE_GROQ_MODEL as string | undefined
   return {
     apiKey: envKey || '',
-    model: envModel || 'llama-3.1-70b-versatile',
+    model: envModel || 'openai/gpt-oss-120b',
   }
+}
+
+// Shared: extract JSON even if model wraps it in markdown fences
+function parseJsonResponse(content: string): any {
+  const trimmed = content.trim()
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/)
+    if (fenceMatch) return JSON.parse(fenceMatch[1].trim())
+    const objMatch = trimmed.match(/\{[\s\S]*\}/)
+    if (objMatch) return JSON.parse(objMatch[0])
+    throw new Error('AI returned non-JSON response')
+  }
+}
+
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  opts: { timeoutMs?: number; retries?: number } = {}
+): Promise<Response> {
+  const { timeoutMs = 25000, retries = 2 } = opts
+  let lastErr: any = null
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController()
+    const id = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      const res = await fetch(url, { ...init, signal: controller.signal })
+      // Retry on transient overload/rate-limit
+      if ((res.status === 503 || res.status === 429) && attempt < retries) {
+        await res.text().catch(() => {})
+        await new Promise(r => setTimeout(r, 2000 * (attempt + 1)))
+        continue
+      }
+      return res
+    } catch (e: any) {
+      lastErr = e
+      if (e?.name === 'AbortError' && attempt < retries) {
+        await new Promise(r => setTimeout(r, 2000 * (attempt + 1)))
+        continue
+      }
+      if (e?.name === 'AbortError') throw new Error('AI request timed out. Please try again.')
+      throw e
+    } finally { clearTimeout(id) }
+  }
+  throw lastErr || new Error('AI request failed. Please try again.')
 }
 
 export class GroqProvider implements AIProvider {
@@ -222,30 +252,18 @@ export class GroqProvider implements AIProvider {
     const cfg = getGroqConfig()
     this.apiKey = apiKey || cfg.apiKey || ''
     this.baseUrl = '/api/groq/openai/v1'
-    this.model = model || cfg.model || 'llama-3.1-70b-versatile'
+    this.model = model || cfg.model || 'openai/gpt-oss-120b'
   }
 
   private isPlaceholderKey(key: string): boolean {
     return !key || key.length < 15 || key.includes('xxxx')
   }
 
-  private async fetchWithTimeout(url: string, init: RequestInit, ms = 25000): Promise<Response> {
-    const controller = new AbortController()
-    const id = setTimeout(() => controller.abort(), ms)
-    try {
-      const res = await fetch(url, { ...init, signal: controller.signal })
-      return res
-    } catch (e: any) {
-      if (e?.name === 'AbortError') throw new Error('AI request timed out. Please try again.')
-      throw e
-    } finally { clearTimeout(id) }
-  }
-
   async analyzeDocument(document: DocumentNode, analysis: DocumentAnalysis): Promise<FormattingPlan> {
     if (!this.apiKey || this.isPlaceholderKey(this.apiKey)) throw new Error('AI formatting is currently unavailable. Please try again later.')
     const textContent = this.extractTextForAnalysis(document)
     const prompt = this.buildAnalysisPrompt(textContent, analysis)
-    const response = await this.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
+    const response = await fetchWithRetry(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.apiKey}` },
       body: JSON.stringify({
@@ -253,7 +271,6 @@ export class GroqProvider implements AIProvider {
         messages: [{ role: 'system', content: this.getSystemPrompt() }, { role: 'user', content: prompt }],
         temperature: 0.3,
         max_tokens: 4000,
-        response_format: { type: 'json_object' },
       }),
     })
     if (!response.ok) {
@@ -264,7 +281,7 @@ export class GroqProvider implements AIProvider {
     const data = await response.json()
     const content = data.choices[0]?.message?.content
     if (!content) throw new Error('AI formatting is currently unavailable. Please try again.')
-    return JSON.parse(content)
+    return parseJsonResponse(content)
   }
 
   async detectStructure(document: DocumentNode): Promise<Partial<DocumentAnalysis>> {
@@ -284,15 +301,14 @@ export class GroqProvider implements AIProvider {
 
     Document text (first 10000 chars):
     ${textContent.slice(0, 10000)}`
-    const response = await this.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
+    const response = await fetchWithRetry(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.apiKey}` },
       body: JSON.stringify({
         model: this.model,
-        messages: [{ role: 'system', content: 'You are a document structure analyzer. Return only valid JSON.' }, { role: 'user', content: prompt }],
+        messages: [{ role: 'system', content: 'You are a document structure analyzer. Return only valid JSON, no markdown fences.' }, { role: 'user', content: prompt }],
         temperature: 0.1,
         max_tokens: 2000,
-        response_format: { type: 'json_object' },
       }),
     })
     if (!response.ok) {
@@ -303,7 +319,7 @@ export class GroqProvider implements AIProvider {
     const data = await response.json()
     const content = data.choices[0]?.message?.content
     if (!content) throw new Error('AI formatting is currently unavailable. Please try again.')
-    return JSON.parse(content)
+    return parseJsonResponse(content)
   }
 
   private getSystemPrompt(): string {
@@ -368,8 +384,7 @@ export function getNvidiaModels(): Array<{ id: NvidiaModelId; label: string; end
 
 export function getGroqModels(): Array<{ id: GroqModelId; label: string; endpoint: string; description: string }> {
   return [
-    { id: GROQ_FREE_MODELS.llama70b, label: 'Llama 3.1 70B Versatile', endpoint: 'api.groq.com', description: 'Groq fastest — 70B, free' },
-    { id: GROQ_FREE_MODELS.llama8b, label: 'Llama 3.1 8B Instant', endpoint: 'api.groq.com', description: 'Groq ultra-fast — 8B' },
-    { id: GROQ_FREE_MODELS.mixtral, label: 'Mixtral 8x7B', endpoint: 'api.groq.com', description: 'Groq MoE — 32k' },
+    { id: GROQ_FREE_MODELS.gptOss120b, label: 'GPT OSS 120B', endpoint: 'api.groq.com', description: 'OpenAI flagship open-weight, 500 tps' },
+    { id: GROQ_FREE_MODELS.gptOss20b, label: 'GPT OSS 20B', endpoint: 'api.groq.com', description: 'Fast 20B MoE, 1000 tps' },
   ]
 }

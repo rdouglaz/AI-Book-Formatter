@@ -5,7 +5,7 @@ import { Button, Card, CardContent, CardHeader, CardTitle, CardDescription, Prog
 import { useAppStore } from '@/store'
 import { applyFormattingProfile, generateTableOfContents, resolveOrphansAndWidows } from '@/utils/formatting'
 import type { FormattingPlan, FormattingDecision } from '@/types'
-import { createAIProvider, NVIDIA_FREE_MODELS, type NvidiaModelId } from '@/utils/ai'
+import { createAIProvider, NVIDIA_FREE_MODELS, GROQ_FREE_MODELS, type NvidiaModelId } from '@/utils/ai'
 import { findNodesByType } from '@/utils/helpers'
 import { analyzeDocument as analyzeDocumentLocal } from '@/utils/analysis'
 import type { DocumentNode } from '@/types'
@@ -65,29 +65,31 @@ export default function FormatPage() {
       setProcessingProgress({ stage: 'ai_analysis', progress: 25, message: 'Analyzing document structure...' })
       
       const analysisForAI = currentAnalysis ?? analyzeDocumentLocal(currentDocument)
-      // Try NVIDIA first, then Groq if NVIDIA fails and Groq key exists
+      // Try NVIDIA Ultra → NVIDIA DeepSeek → Groq, first success wins
       let plan: any = null
       let lastErr: any = null
-      const tryProviders: Array<'nvidia' | 'groq'> = []
-      if (isNvidiaValid) tryProviders.push('nvidia')
-      if (isGroqValid) tryProviders.push('groq')
-      // ensure at least nvidia is tried even if key looks invalid — provider will throw clear error
-      if (tryProviders.length === 0) tryProviders.push('nvidia')
+      const attempts: Array<{ provider: 'nvidia' | 'groq'; model?: string }> = []
+      if (isNvidiaValid) {
+        attempts.push({ provider: 'nvidia', model: NVIDIA_FREE_MODELS.nemotronUltra })
+        attempts.push({ provider: 'nvidia', model: NVIDIA_FREE_MODELS.deepseekV4Pro })
+      }
+      if (isGroqValid) {
+        attempts.push({ provider: 'groq', model: GROQ_FREE_MODELS.gptOss120b })
+        attempts.push({ provider: 'groq', model: GROQ_FREE_MODELS.gptOss20b })
+      }
+      if (attempts.length === 0) attempts.push({ provider: 'nvidia', model: selectedModel })
       
-      for (const p of tryProviders) {
+      for (const a of attempts) {
         try {
-          const model = p === 'nvidia' ? selectedModel : undefined
-          const aiProvider = createAIProvider(p as any, { model } as any)
+          const aiProvider = createAIProvider(a.provider, { model: a.model })
           plan = await aiProvider.analyzeDocument(currentDocument, analysisForAI)
           break
         } catch (e) {
           lastErr = e
-          console.warn(`${p} failed, trying next:`, e)
-          // if not last provider, continue
+          console.warn(`${a.provider}/${a.model} failed, trying next:`, e)
         }
       }
       if (!plan) throw lastErr || new Error('AI formatting is currently unavailable. Please try again.')
-      // No mock fallback — AI is required; errors are shown to user
       
       setFormattingPlan(plan)
       setCurrentFormattingPlan(plan)
