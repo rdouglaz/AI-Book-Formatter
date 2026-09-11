@@ -8,8 +8,8 @@ export interface AIProvider {
 }
 
 export const NVIDIA_FREE_MODELS = {
-  nemotronUltra: 'nvidia/llama-3.1-nemotron-70b-instruct',
-  llama405b: 'meta/llama-3.1-405b-instruct',
+  nemotronUltra: 'nvidia/nemotron-3-ultra-550b-a55b',
+  deepseekV4Pro: 'deepseek-ai/deepseek-v4-pro-0813',
 } as const
 
 export type NvidiaModelId = typeof NVIDIA_FREE_MODELS[keyof typeof NVIDIA_FREE_MODELS]
@@ -19,7 +19,7 @@ function getNvidiaConfig(): { apiKey: string; model: string } {
   const envModel = (import.meta as any)?.env?.VITE_NVIDIA_MODEL as string | undefined
   return {
     apiKey: envKey || '',
-    model: envModel || 'nvidia/llama-3.1-nemotron-70b-instruct',
+    model: envModel || 'nvidia/nemotron-3-ultra-550b-a55b',
   }
 }
 
@@ -34,7 +34,7 @@ export class NVIDIAProvider implements AIProvider {
     this.apiKey = apiKey || cfg.apiKey || ''
     // Use Vite/Vercel proxy to avoid CORS — same origin /api/nvidia
     this.baseUrl = '/api/nvidia/v1'
-    this.model = model || cfg.model || 'nvidia/llama-3.1-nemotron-70b-instruct'
+    this.model = model || cfg.model || 'nvidia/nemotron-3-ultra-550b-a55b'
   }
 
   private isPlaceholderKey(key: string): boolean {
@@ -361,8 +361,8 @@ export function createAIProvider(type: 'nvidia' | 'groq', config?: { apiKey?: st
 
 export function getNvidiaModels(): Array<{ id: NvidiaModelId; label: string; endpoint: string; description: string }> {
   return [
-    { id: NVIDIA_FREE_MODELS.nemotronUltra, label: 'Llama 3.1 Nemotron 70B', endpoint: 'integrate.api.nvidia.com', description: 'NVIDIA 70B - free, 128k context' },
-    { id: NVIDIA_FREE_MODELS.llama405b, label: 'Llama 3.1 405B Instruct', endpoint: 'integrate.api.nvidia.com', description: 'Meta 405B - free instruction model' },
+    { id: NVIDIA_FREE_MODELS.nemotronUltra, label: 'Nemotron 3 Ultra 550B-A55B', endpoint: 'integrate.api.nvidia.com', description: '1M context, hybrid Mamba-Transformer, best reasoning' },
+    { id: NVIDIA_FREE_MODELS.deepseekV4Pro, label: 'DeepSeek V4 Pro 0813', endpoint: 'integrate.api.nvidia.com', description: '262K context, MoE for coding & agentic workflows' },
   ]
 }
 
