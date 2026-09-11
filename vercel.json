@@ -1,0 +1,10 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "installCommand": "npm install",
+  "framework": "vite",
+  "rewrites": [
+    { "source": "/api/nvidia/:path*", "destination": "https://integrate.api.nvidia.com/v1/:path*" },
+    { "source": "/api/groq/:path*", "destination": "https://api.groq.com/:path*" }
+  ]
+}
