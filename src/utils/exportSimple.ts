@@ -43,9 +43,18 @@ function wrapText(text:string, maxChars:number): string[] {
 }
 
 // ---------- PDF ----------
+function drawCropMarks(pdf: any, box: { width: number; height: number }, bleedPt: number) {
+  pdf.setDrawColor(0); pdf.setLineWidth(0.25)
+  const m = 9
+  pdf.line(bleedPt, m, bleedPt, m+12); pdf.line(m, bleedPt, m+12, bleedPt)
+  pdf.line(box.width-bleedPt, m, box.width-bleedPt, m+12); pdf.line(box.width-m-12, bleedPt, box.width-m, bleedPt)
+  pdf.line(bleedPt, box.height-m, bleedPt, box.height-m-12); pdf.line(m, box.height-bleedPt, m+12, box.height-bleedPt)
+  pdf.line(box.width-bleedPt, box.height-m, box.width-bleedPt, box.height-m-12); pdf.line(box.width-m-12, box.height-bleedPt, box.width-m, box.height-bleedPt)
+}
+
 async function exportToPDF(document: DocumentNode, profile: FormattingProfile, title:string, author:string, includeTOC:boolean, bleed:boolean, onProgress?:(n:number,m:string)=>void): Promise<Blob>{
   onProgress?.(10,'Paginating...')
-  const pages = paginate(document, profile, { bleedInches: bleed?0.125:0, showCropMarks: bleed })
+  const pages = paginate(document, profile, { bleedInches: bleed?0.125:0, showCropMarks: bleed, bookTitle: title, authorName: author })
   const box = getPageBox(profile, bleed?0.125*72:0)
   const pdf = new jsPDF({ unit:'pt', format:[box.width, box.height], orientation: box.width > box.height ? 'landscape':'portrait' })
   // embed font handling: jsPDF built-in fonts only (Helvetica) — map serif -> Times, sans -> Helvetica
@@ -56,26 +65,23 @@ async function exportToPDF(document: DocumentNode, profile: FormattingProfile, t
   const textWidth = box.width - marginInner - marginOuter
   const bleedPt = bleed?9:0
 
-  // Title page as first page if no paginated title
-  // Render pages
+  // Title page (unnumbered, no header/footer)
+  if(bleed) drawCropMarks(pdf, box, bleedPt)
+  pdf.setFont(headingFontName, 'bold'); pdf.setFontSize(26); pdf.setTextColor(20)
+  const titleLines = pdf.splitTextToSize(title, textWidth)
+  let ty = box.height * 0.36
+  for (const line of titleLines) { pdf.text(line, box.width / 2, ty, { align: 'center' }); ty += 30 }
+  pdf.setFont(bodyFontName, 'italic'); pdf.setFontSize(13); pdf.setTextColor(80)
+  pdf.text(`by ${author}`, box.width / 2, ty + 12, { align: 'center' })
+  pdf.setTextColor(0)
+
+  // Render content pages
   for(let pi=0; pi<pages.length; pi++){
     const page = pages[pi]
-    if(pi>0) pdf.addPage([box.width, box.height])
+    pdf.addPage([box.width, box.height])
     const isLeft = page.isLeft
     const leftMargin = isLeft ? marginOuter : marginInner
-    // Crop marks if bleed
-    if(bleed){
-      pdf.setDrawColor(0); pdf.setLineWidth(0.25)
-      const m=9
-      // top-left
-      pdf.line(bleedPt, m, bleedPt, m+12); pdf.line(m, bleedPt, m+12, bleedPt)
-      // top-right
-      pdf.line(box.width-bleedPt, m, box.width-bleedPt, m+12); pdf.line(box.width-m-12, bleedPt, box.width-m, bleedPt)
-      // bottom-left
-      pdf.line(bleedPt, box.height-m, bleedPt, box.height-m-12); pdf.line(m, box.height-bleedPt, m+12, box.height-bleedPt)
-      // bottom-right
-      pdf.line(box.width-bleedPt, box.height-m, box.width-bleedPt, box.height-m-12); pdf.line(box.width-m-12, box.height-bleedPt, box.width-m, box.height-bleedPt)
-    }
+    if(bleed) drawCropMarks(pdf, box, bleedPt)
     // Header
     if(page.header && profile.layout.runningHeads.enabled){
       pdf.setFont(headingFontName, page.isLeft? 'normal':'italic'); pdf.setFontSize(profile.layout.runningHeads.fontSize)
@@ -98,10 +104,18 @@ async function exportToPDF(document: DocumentNode, profile: FormattingProfile, t
       const lineH = span.fontSize * span.lineHeight
       const maxChars = Math.floor(textWidth / (span.fontSize*0.5))
       const lines = wrapText(span.text, maxChars)
+      // Chapter label line (e.g. CHAPTER ONE) — centered, letterspaced feel
+      if(span.style==='chapterLabel'){
+        for(const line of lines){
+          if(y + lineH > box.height - marginBottom) break
+          pdf.text(line.split('').join('  '), box.width/2, y, { align:'center', maxWidth:textWidth })
+          y+= lineH
+        }
+        y+= 8
+        continue
+      }
       // Heading centering
       if(span.style==='heading1'){
-        const headingText = span.text
-        // For chapter headings we already have formatted title? Use span.text as is
         for(const line of lines){
           if(y + lineH > box.height - marginBottom) break
           pdf.text(line, box.width/2, y, { align:'center', maxWidth:textWidth })
@@ -122,7 +136,8 @@ async function exportToPDF(document: DocumentNode, profile: FormattingProfile, t
         continue
       }
       // Normal spans
-      for(const line of lines){
+      for(let li=0; li<lines.length; li++){
+        const line = lines[li]
         if(y + lineH > box.height - marginBottom){
           // Should not happen because pagination already split, but guard
           break
@@ -137,12 +152,9 @@ async function exportToPDF(document: DocumentNode, profile: FormattingProfile, t
           x += indent; w -= indent
         }
         if(span.style==='blockquote'){ x += 18; w -= 36 }
-        if(align==='justify'){
-          // jsPDF justify via split + custom? Use left for simplicity and allow word spacing
-          pdf.text(line, x, y, { maxWidth:w, align:'left' })
-        } else {
-          pdf.text(line, x, y, { maxWidth:w, align: align as any })
-        }
+        // Justify body lines but keep the last (ragged) line left-aligned
+        const lineAlign = (align === 'justify' && li === lines.length - 1) ? 'left' : align
+        pdf.text(line, x, y, { maxWidth:w, align: lineAlign as any })
         y+= lineH
       }
       y+= 2 // paragraph gap
@@ -364,10 +376,12 @@ export async function exportDocument(options: ExportOptions): Promise<Blob>{
 
 export function renderDocumentToHTML(document: DocumentNode, profile: FormattingProfile, title:string, author:string, includeTOC:boolean): string {
   // Use pagination to split into .book-page divs, each page rendered as HTML
-  const pages = paginate(document, profile, { bleedInches:0 })
-  let html = `<div style="font-family:${profile.typography.bodyFont.family},serif">`
-  // Title page
-  html += `<div class="book-page" style="min-height:720px;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;padding:48px;border-bottom:2px solid #eee"><h1 style="font-family:${profile.typography.headingFont.family},serif;font-size:${profile.typography.headingFontSizes.chapter}pt">${title}</h1><p><em>by ${author}</em></p><p style="font-size:10pt;color:#888;margin-top:24px">${profile.designPreset} • ${profile.bookSize}</p><p style="font-size:9pt;color:#888;margin-top:8px">${pages.length} pages • bleed ${profile.layout.margins.inner}" inner</p></div>`
+  const pages = paginate(document, profile, { bleedInches:0, bookTitle: title, authorName: author })
+  const bodyFont = `"${profile.typography.bodyFont.family}", Georgia, serif`
+  const headingFont = `"${profile.typography.headingFont.family}", Georgia, serif`
+  let html = `<div style="font-family:${bodyFont}">`
+  // Title page — clean, no internal metadata
+  html += `<div class="book-page" style="min-height:720px;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;padding:48px;border-bottom:2px solid #eee"><h1 style="font-family:${headingFont};font-size:${profile.typography.headingFontSizes.chapter}pt;line-height:1.25;margin:0 0 16px">${title}</h1><p style="font-size:12pt;margin:0"><em>by ${author}</em></p></div>`
   pages.forEach((page, pi)=>{
     const inner = page.isLeft ? profile.layout.margins.outer : profile.layout.margins.inner
     const outer = page.isLeft ? profile.layout.margins.inner : profile.layout.margins.outer
@@ -376,14 +390,16 @@ export function renderDocumentToHTML(document: DocumentNode, profile: Formatting
     if(page.header) html += `<div style="position:absolute;top:12px;left:${inner}in;right:${outer}in;text-align:${page.isLeft?'left':'right'};font-size:${profile.layout.runningHeads.fontSize}pt;color:#888;font-variant:${profile.layout.runningHeads.fontStyle==='small-caps'?'small-caps':'normal'}">${page.header}</div>`
     // spans
     for(const span of page.spans){
-      if(span.style==='heading1'){
-        html += `<h1 style="font-family:${profile.typography.headingFont.family},serif;text-align:center;margin-top:${page.isChapterOpening?profile.chapterStyle.topSpacing*16:8}px;margin-bottom:${profile.chapterStyle.titleSpacing*16}px;font-size:${span.fontSize}pt;font-weight:600">${span.text}</h1>`
+      if(span.style==='chapterLabel'){
+        html += `<div style="font-family:${headingFont};text-align:center;letter-spacing:0.22em;font-size:${span.fontSize}pt;margin-top:${page.isChapterOpening?profile.chapterStyle.topSpacing*14:4}px;margin-bottom:10px;color:#333">${span.text}</div>`
+      } else if(span.style==='heading1'){
+        html += `<h1 style="font-family:${headingFont};text-align:center;line-height:1.2;margin-top:4px;margin-bottom:${profile.chapterStyle.titleSpacing*16}px;font-size:${span.fontSize}pt;font-weight:600">${span.text}</h1>`
         if(profile.chapterStyle.decoration==='line') html+=`<hr style="width:60px;margin:12px auto;border:1px solid #111"/>`
         else if(profile.chapterStyle.decoration==='ornament') html+=`<div style="text-align:center;margin:12px 0">— — —</div>`
       } else if(span.style==='heading2'){
-        html += `<h2 style="font-family:${profile.typography.headingFont.family},serif;font-size:${span.fontSize}pt;margin-top:18px;margin-bottom:8px">${span.text}</h2>`
+        html += `<h2 style="font-family:${headingFont};font-size:${span.fontSize}pt;margin-top:18px;margin-bottom:8px">${span.text}</h2>`
       } else if(span.style==='heading3'){
-        html += `<h3 style="font-family:${profile.typography.headingFont.family},serif;font-size:${span.fontSize}pt;margin-top:12px;margin-bottom:6px">${span.text}</h3>`
+        html += `<h3 style="font-family:${headingFont};font-size:${span.fontSize}pt;margin-top:12px;margin-bottom:6px">${span.text}</h3>`
       } else if(span.style==='blockquote'){
         html += `<blockquote style="margin:12px 24px;font-style:italic;border-left:3px solid #1a1a2e;padding-left:12px;font-size:${span.fontSize}pt;line-height:${span.lineHeight}">${span.text}</blockquote>`
       } else if(span.style==='list'){

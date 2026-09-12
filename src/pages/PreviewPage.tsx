@@ -4,7 +4,7 @@ import { ChevronLeft, ChevronRight, RotateCcw, Eye, FileText, ArrowLeft, ArrowRi
 import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Badge, Slider, Progress, Input } from '@/components/ui'
 import { useAppStore } from '@/store'
 import { renderDocumentToHTML } from '@/utils/exportSimple'
-import { findNodesByType } from '@/utils/helpers'
+import { findNodesByType, getBookSizeDimensions } from '@/utils/helpers'
 import { paginate, paginationQuality } from '@/utils/pagination'
 
 export default function PreviewPage() {
@@ -108,6 +108,8 @@ export default function PreviewPage() {
   }
   
   const chapters = findNodesByType(currentDocument, 'chapter')
+  const trimDims = currentFormattingProfile ? getBookSizeDimensions(currentFormattingProfile.bookSize) : { width: 6, height: 9 }
+  const pageAspect = { w: trimDims.width, h: trimDims.height }
   
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -244,22 +246,20 @@ export default function PreviewPage() {
             </CardContent>
           </Card>
         ) : (
-          <div 
+          <div
             ref={previewRef}
-            className="relative bg-white shadow-2xl"
-            style={{ 
+            className="relative bg-white shadow-2xl rounded-[2px]"
+            style={{
               transform: `scale(${zoom / 100})`,
               transformOrigin: 'top center',
               width: '100%',
-              maxWidth: '600px',
+              maxWidth: '560px',
+              aspectRatio: `${pageAspect.w} / ${pageAspect.h}`,
             }}
           >
-            <div 
+            <div
               className="book-page"
-              style={{
-                minHeight: '800px',
-                backgroundColor: 'white',
-              }}
+              style={{ backgroundColor: 'white', minHeight: '100%' }}
               dangerouslySetInnerHTML={{ __html: pagesHtml[currentPage - 1] || '' }}
             />
           </div>
@@ -281,12 +281,16 @@ export default function PreviewPage() {
                 <button
                   key={i}
                   onClick={() => goToPage(i + 1)}
-                  className={`flex-shrink-0 w-20 h-28 bg-white border rounded shadow-sm transition-all ${
+                  className={`flex-shrink-0 w-[104px] h-[140px] bg-white border rounded overflow-hidden shadow-sm transition-all ${
                     currentPage === i + 1 ? 'border-primary ring-2 ring-primary' : 'border-border hover:border-primary/50'
                   }`}
-                  style={{ transform: 'scale(0.3)', transformOrigin: 'top left' }}
-                  dangerouslySetInnerHTML={{ __html: pagesHtml[i] }}
-                />
+                >
+                  <div
+                    className="origin-top-left pointer-events-none"
+                    style={{ width: '520px', transform: 'scale(0.2)' }}
+                    dangerouslySetInnerHTML={{ __html: pagesHtml[i] }}
+                  />
+                </button>
               ))}
             </div>
           </div>

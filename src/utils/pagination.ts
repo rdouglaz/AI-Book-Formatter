@@ -14,12 +14,13 @@ export interface TypesetSpan {
   nodeId: string
   type: DocumentNode['type']
   text: string
-  style: 'body' | 'heading1' | 'heading2' | 'heading3' | 'blockquote' | 'list'
+  style: 'body' | 'heading1' | 'heading2' | 'heading3' | 'chapterLabel' | 'blockquote' | 'list'
   fontSize: number
   lineHeight: number
   isFirstOnPage?: boolean
   isChapterOpening?: boolean
   keepWithNext?: boolean
+  chapterTitle?: string
 }
 
 export interface Page {
@@ -37,6 +38,45 @@ export interface PaginationOptions {
   bleedInches?: number // 0.125 typical
   showCropMarks?: boolean
   charsPerLineEstimate?: number
+  bookTitle?: string
+  authorName?: string
+}
+
+function formatChapterNumber(num: number, style: string): string {
+  if (style === 'roman') {
+    const map: [number, string][] = [[1000,'M'],[900,'CM'],[500,'D'],[400,'CD'],[100,'C'],[90,'XC'],[50,'L'],[40,'XL'],[10,'X'],[9,'IX'],[5,'V'],[4,'IV'],[1,'I']]
+    let n = num, r = ''
+    for (const [v, s] of map) { while (n >= v) { r += s; n -= v } }
+    return r
+  }
+  if (style === 'word') {
+    const w = ['zero','one','two','three','four','five','six','seven','eight','nine','ten','eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen','twenty']
+    if (num < w.length) return w[num]
+    return String(num)
+  }
+  if (style === 'none') return ''
+  return String(num)
+}
+
+function formatChapterTitle(title: string, style: string): string {
+  if (style === 'uppercase') return title.toUpperCase()
+  if (style === 'title') return title.replace(/\w\S*/g, t => t[0].toUpperCase() + t.slice(1).toLowerCase())
+  if (style === 'sentence') return title[0]?.toUpperCase() + title.slice(1).toLowerCase()
+  return title
+}
+
+function resolveRunningHead(
+  setting: string,
+  bookTitle: string,
+  chapterTitle: string,
+  authorName: string
+): string | undefined {
+  switch (setting) {
+    case 'book_title': return bookTitle || undefined
+    case 'chapter_title': return chapterTitle || undefined
+    case 'author_name': return authorName || undefined
+    default: return undefined
+  }
 }
 
 export function getPageBox(profile: FormattingProfile, withBleed = 0): PageBox {
@@ -65,6 +105,7 @@ function estimateLinesForSpan(span: TypesetSpan, box: PageBox, availableWidth: n
   // Apply lineHeight factor but for pagination we just need line count
   // Headings occupy more vertical space
   if (span.style === 'heading1') return Math.max(2, lines) + 2 // top spacing
+  if (span.style === 'chapterLabel') return Math.max(1, lines) + 1
   if (span.style === 'heading2') return Math.max(1, lines) + 1
   if (span.style === 'heading3') return Math.max(1, lines) + 1
   return lines
@@ -78,32 +119,54 @@ export function paginate(document: DocumentNode, profile: FormattingProfile, opt
 
   // Flatten document into ordered spans
   const spans: TypesetSpan[] = []
-  const pushChapter = (ch: DocumentNode) => {
+  const bookTitle = opts.bookTitle || ''
+  const authorName = opts.authorName || ''
+  const pushChapter = (ch: DocumentNode, chapterNumber: number) => {
+    const cs = profile.chapterStyle
+    const displayTitle = formatChapterTitle(ch.content, cs.titleCase)
+    const num = formatChapterNumber(chapterNumber, cs.numberingStyle)
+    const labelText = [cs.includeChapterLabel ? cs.chapterLabel : '', num].filter(Boolean).join(' ')
+    // Chapter label line (e.g. "CHAPTER ONE") — smaller, letterspaced
+    if (labelText) {
+      spans.push({
+        nodeId: ch.id,
+        type: 'chapter',
+        text: cs.titleCase === 'uppercase' ? labelText.toUpperCase() : labelText,
+        style: 'chapterLabel',
+        fontSize: Math.max(9, profile.typography.headingFontSizes.chapter * 0.5),
+        lineHeight: 1.3,
+        isChapterOpening: true,
+        keepWithNext: true,
+        chapterTitle: displayTitle,
+      })
+    }
     spans.push({
       nodeId: ch.id,
       type: 'chapter',
-      text: ch.content,
+      text: displayTitle,
       style: 'heading1',
       fontSize: profile.typography.headingFontSizes.chapter,
       lineHeight: 1.2,
-      isChapterOpening: true,
+      isChapterOpening: !labelText,
       keepWithNext: true,
+      chapterTitle: displayTitle,
     })
+    const chTitle = spans[spans.length - 1]?.chapterTitle || ''
     const visit = (n: DocumentNode) => {
       for (const child of n.children) {
         if (child.type === 'section') {
-          spans.push({ nodeId: child.id, type:'section', text: child.content, style:'heading2', fontSize: profile.typography.headingFontSizes.section, lineHeight:1.3, keepWithNext:true })
+          spans.push({ nodeId: child.id, type:'section', text: child.content, style:'heading2', fontSize: profile.typography.headingFontSizes.section, lineHeight:1.3, keepWithNext:true, chapterTitle: chTitle })
           visit(child)
         } else if (child.type === 'subsection') {
-          spans.push({ nodeId: child.id, type:'subsection', text: child.content, style:'heading3', fontSize: profile.typography.headingFontSizes.subsection, lineHeight:1.3, keepWithNext:true })
+          spans.push({ nodeId: child.id, type:'subsection', text: child.content, style:'heading3', fontSize: profile.typography.headingFontSizes.subsection, lineHeight:1.3, keepWithNext:true, chapterTitle: chTitle })
           visit(child)
         } else if (child.type === 'paragraph') {
-          spans.push({ nodeId: child.id, type:'paragraph', text: child.content, style:'body', fontSize: profile.typography.bodyFontSize, lineHeight: profile.typography.lineHeight })
+          spans.push({ nodeId: child.id, type:'paragraph', text: child.content, style:'body', fontSize: profile.typography.bodyFontSize, lineHeight: profile.typography.lineHeight, chapterTitle: chTitle })
         } else if (child.type === 'blockquote') {
-          spans.push({ nodeId: child.id, type:'blockquote', text: child.content, style:'blockquote', fontSize: profile.typography.bodyFontSize-0.5, lineHeight: profile.typography.lineHeight })
+          spans.push({ nodeId: child.id, type:'blockquote', text: child.content, style:'blockquote', fontSize: profile.typography.bodyFontSize-0.5, lineHeight: profile.typography.lineHeight, chapterTitle: chTitle })
         } else if (child.type === 'list') {
           for (const li of child.children) {
-            spans.push({ nodeId: li.id, type:'list_item', text:`• ${li.content}`, style:'list', fontSize: profile.typography.bodyFontSize, lineHeight: profile.typography.lineHeight })
+            spans.push({ nodeId: li.id, type:'list_item', text:`• ${li.content}`, style:'list', fontSize: profile.typography.bodyFontSize, lineHeight: profile.typography.lineHeight, chapterTitle: chTitle })
           }
         } else {
           visit(child)
@@ -112,7 +175,7 @@ export function paginate(document: DocumentNode, profile: FormattingProfile, opt
     }
     visit(ch)
   }
-  findNodesByType(document,'chapter').forEach(pushChapter)
+  findNodesByType(document,'chapter').forEach((ch, i) => pushChapter(ch, i + 1))
   // If no chapters, treat all paragraphs as body
   if (spans.length===0) {
     traverseDocument(document, (n)=>{
@@ -131,9 +194,15 @@ export function paginate(document: DocumentNode, profile: FormattingProfile, opt
     if (currentSpans.length===0) return
     const pageNum = pages.length + 1
     const isLeft = pageNum % 2 === 0
-    const header = profile.layout.runningHeads.enabled ? (isLeft ? (profile.layout.runningHeads.leftPageContent==='book_title' ? 'Book Title' : 'Chapter Title') : 'Chapter Title') : undefined
+    // Chapter title context = first content span's chapter (pages never mix chapters except at breaks)
+    const pageChapter = currentSpans.find(s => s.chapterTitle)?.chapterTitle || ''
+    const rh = profile.layout.runningHeads
+    // No running head on chapter-opening pages (standard publishing practice)
+    const header = (!profile.layout.runningHeads.enabled || isChapterOpening) ? undefined : resolveRunningHead(
+      isLeft ? rh.leftPageContent : rh.rightPageContent,
+      bookTitle, pageChapter, authorName
+    )
     const footer = profile.layout.pageNumbers.enabled && !(isChapterOpening && profile.layout.pageNumbers.hideOnChapterOpenings) ? String(pageNum) : undefined
-    // Widow/orphan fix: if last span is a heading and page ends with heading, pull next span if fits
     pages.push({ number: pageNum, isLeft, isChapterOpening, isFrontMatter, spans: [...currentSpans], header, footer, bleed: bleedPt })
     currentSpans = []
     currentHeight = 0
@@ -149,7 +218,7 @@ export function paginate(document: DocumentNode, profile: FormattingProfile, opt
       // if (pages.length %2===1) { flush empty left? for simplicity we just start next page }
     }
     const lines = estimateLinesForSpan(span, box, textWidth)
-    const spanHeight = lines * lineHeightPt(span) + (span.style==='heading1' ? profile.chapterStyle.topSpacing*72 : span.style==='heading2' ? 12 : span.style==='heading3' ? 8 : 4)
+    const spanHeight = lines * lineHeightPt(span) + (span.style==='heading1' ? profile.chapterStyle.topSpacing*72 : span.style==='chapterLabel' ? 10 : span.style==='heading2' ? 12 : span.style==='heading3' ? 8 : 4)
     // Keep-with-next: if next span exists and this won't fit but next is small, try to keep together
     const next = spans[i+1]
     let combinedHeight = spanHeight
